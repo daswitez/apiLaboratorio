@@ -1,0 +1,1 @@
+son las funciones que van a ser ejecutadas cuando una determinada url se conecta con la db

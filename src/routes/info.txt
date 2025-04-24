@@ -1,0 +1,1 @@
+routes sirve para crear las url o sea las peticiones

@@ -1,0 +1,1 @@
+//para crear configuraciones para importar en la app
