@@ -5,8 +5,8 @@ import sqlv8 from 'msnodesqlv8';
 const dbSettings = {
     server: '127.0.0.1',  // Nombre del servidor
     database: 'Inventario',  // Nombre de la base de datos
-    user: 'myUser',  // El nombre de usuario que creaste
-    password: 'myPassword',  // La contraseña que asignaste
+    user: 'sa',  // El nombre de usuario que creaste
+    password: 'nuevaContraseñaFuerte',  // La contraseña que asignaste
     driver: 'msnodesqlv8',  // El driver de conexión
     options: {
         trustServerCertificate: true  // Si es necesario
@@ -24,6 +24,6 @@ export const getConnection = async () => {
     } catch (error) {
         // Si ocurre un error de conexión, lo mostramos
         console.error("❌ Error connecting to SQL Server:", error);
-        return null;
+        return null;
     }
 };

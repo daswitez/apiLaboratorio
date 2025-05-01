@@ -2,6 +2,8 @@ import { getConnection } from "../database/connection.js";
 import sql from "mssql";
 import bcrypt from "bcryptjs";
 
+
+
 const saltRounds = 10;
 
 export const createEncargado = async (req, res) => {
@@ -149,3 +151,5 @@ export const deleteEncargado = async (req, res) => {
         res.status(500).json({ message: "Error al eliminar encargado" });
     }
 };
+
+

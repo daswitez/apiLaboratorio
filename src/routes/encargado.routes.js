@@ -1,10 +1,11 @@
 import { Router } from "express";
+
 import {
     createEncargado,
     getEncargados,
     getEncargadoById,
     updateEncargado,
-    deleteEncargado
+    deleteEncargado,
 } from "../controllers/encargado.controller.js";
 
 const router = Router();

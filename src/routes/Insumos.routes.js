@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import { body } from 'express-validator';
 // import { validarCampos } from '../middlewares/validarCampos.js';
-import { getInsumos, getInsumo, createInsumo, updateInsumo, deleteInsumo } from '../controllers/Insumos.controllers.js'
+import {
+    getInsumos,
+    getInsumo,
+    createInsumo,
+    updateInsumo,
+    deleteInsumo,
+    getInsumosPorUbicacion
+} from '../controllers/Insumos.controllers.js'
 // import { verifyToken } from '../middlewares/verifyToken.js';
 
 const router = Router()
@@ -32,6 +39,8 @@ router.put('/Insumos/:id', updateInsumo);
 
 //DELETE
 router.delete('/Insumos/:id', deleteInsumo);
+
+router.get('/insumos/ubicacion/:ubicacion', getInsumosPorUbicacion);
 
 
 

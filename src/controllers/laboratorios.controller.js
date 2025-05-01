@@ -100,3 +100,48 @@ export const deleteLaboratorio = async (req, res) => {
         res.status(500).json({ message: "Error al eliminar laboratorio" });
     }
 };
+
+export const getLaboratoriosPorDocente = async (req, res) => {
+    try {
+        const { id_docente } = req.params;
+
+        const pool = await getConnection();
+        const result = await pool.request()
+            .input('id_docente', sql.Int, id_docente)
+            .query(`
+                SELECT 
+                    FORMAT(fecha_solicitud, 'MMMM', 'es-ES') AS mes,
+                    COUNT(*) AS total_laboratorios
+                FROM SolicitudesUso
+                WHERE id_docente = @id_docente
+                GROUP BY FORMAT(fecha_solicitud, 'MMMM', 'es-ES')
+                ORDER BY MIN(MONTH(fecha_solicitud))
+            `);
+
+        res.json(result.recordset);
+    } catch (error) {
+        console.error('Error al obtener datos de laboratorios por docente:', error);
+        res.status(500).json({ message: "Error interno del servidor" });
+    }
+};
+
+export const getTopDocentesLaboratorios = async (req, res) => {
+    try {
+        const pool = await getConnection();
+        const result = await pool.request()
+            .query(`
+                SELECT TOP 4 
+                    d.apellido AS nombre_docente,
+                    COUNT(su.id_solicitud) AS total_laboratorios
+                FROM Docentes d
+                INNER JOIN SolicitudesUso su ON d.id_docente = su.id_docente
+                GROUP BY d.apellido
+                ORDER BY total_laboratorios DESC;
+            `);
+
+        res.json(result.recordset);
+    } catch (error) {
+        console.error('Error al obtener top docentes:', error);
+        res.status(500).json({ message: "Error interno del servidor" });
+    }
+};

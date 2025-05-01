@@ -1,6 +1,7 @@
 import { request } from "express";
 import { getConnection } from "../database/connection.js";
 import sql from 'mssql';
+import {gestionarAlertasInsumo} from "../helpers/alertas.js";
 
 
 //get general
@@ -60,6 +61,8 @@ export const createInsumo = async (req, res) => {
         stock_minimo: req.body.stock_minimo,
         stock_maximo: req.body.stock_minimo
     })
+    const newInsumoId = result.recordset[0].id;
+    await gestionarAlertasInsumo(newInsumoId);
 
 }
 
@@ -104,6 +107,7 @@ export const updateInsumo = async (req, res) => {
             stock_minimo: req.body.stock_minimo,
             stock_maximo: req.body.stock_maximo
         });
+        await gestionarAlertasInsumo(req.params.id);
     } catch (error) {
         console.error('Error al actualizar insumo:', error);
         res.status(500).json({ message: "Error interno del servidor" });
@@ -128,5 +132,20 @@ export const deleteInsumo = async (req, res) => {
     } catch (error) {
         console.error('Error al eliminar insumo:', error);
         res.status(500).json({ message: "Error interno del servidor" });
+    }
+};
+
+export const getInsumosPorUbicacion = async (req, res) => {
+    try {
+        const { ubicacion } = req.params;
+        const pool = await getConnection();
+        const result = await pool.request()
+            .input('ubicacion', sql.VarChar(50), ubicacion)
+            .query('SELECT * FROM Insumos WHERE ubicacion = @ubicacion');
+
+        res.json(result.recordset);
+    } catch (error) {
+        console.error('Error al obtener insumos por ubicación:', error);
+        res.status(500).json({ message: "Error al obtener insumos" });
     }
 };

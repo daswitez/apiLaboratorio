@@ -47,7 +47,7 @@ export const createSolicitudUso = async (req, res) => {
             .input('id_docente', sql.Int, id_docente)
             .query('SELECT 1 FROM Docentes WHERE id_docente = @id_docente');
 
-        if (docenteExists.recordset.length === 0) {
+        if (!docenteExists.recordset.length) {
             await transaction.rollback();
             return res.status(404).json({ message: "Docente no encontrado" });
         }
@@ -63,7 +63,7 @@ export const createSolicitudUso = async (req, res) => {
             .input('id_practica', sql.Int, id_practica)
             .input('id_laboratorio', sql.Int, id_laboratorio)
             .input('fecha_hora_inicio', sql.DateTime, fecha_hora_inicio)
-            .input('fecha_hora_fin', sql.DateTime, fecha_hora_fin) // Nombre corregido
+            .input('fecha_hora_fin', sql.DateTime, fecha_hora_fin)
             .input('numero_estudiantes', sql.Int, numero_estudiantes)
             .input('tamano_grupo', sql.Int, tamano_grupo)
             .input('numero_grupos', sql.Int, numero_grupos)
@@ -101,7 +101,7 @@ export const createSolicitudUso = async (req, res) => {
                 .input('id_insumo', sql.Int, insumo.id_insumo)
                 .query('SELECT 1 FROM Insumos WHERE id_insumo = @id_insumo');
 
-            if (insumoExists.recordset.length === 0) {
+            if (!insumoExists.recordset.length) {
                 await transaction.rollback();
                 return res.status(404).json({ message: `Insumo ${insumo.id_insumo} no encontrado` });
             }
@@ -115,28 +115,6 @@ export const createSolicitudUso = async (req, res) => {
                     INSERT INTO DetalleSolicitudUso
                         (id_solicitud, id_insumo, cantidad_por_grupo, cantidad_total)
                     VALUES (@id_solicitud, @id_insumo, @cantidad_por_grupo, @cantidad_total)
-                `);
-
-            const stockResult = await new sql.Request(transaction)
-                .input('id_insumo', sql.Int, insumo.id_insumo)
-                .query('SELECT stock_actual FROM Insumos WHERE id_insumo = @id_insumo');
-
-            const stockActual = stockResult.recordset[0]?.stock_actual ?? 0;
-
-            if (stockActual < cantidad_total) {
-                await transaction.rollback();
-                return res.status(400).json({
-                    message: `Stock insuficiente para el insumo ${insumo.id_insumo}. Disponible: ${stockActual}, Requerido: ${cantidad_total}`
-                });
-            }
-
-            await new sql.Request(transaction)
-                .input('id_insumo', sql.Int, insumo.id_insumo)
-                .input('cantidad_total', sql.Int, cantidad_total)
-                .query(`
-                    UPDATE Insumos
-                    SET stock_actual = stock_actual - @cantidad_total
-                    WHERE id_insumo = @id_insumo
                 `);
         }
 
@@ -162,7 +140,6 @@ export const createSolicitudUso = async (req, res) => {
         });
     }
 };
-
 
 
 export const getSolicitudesUso = async (req, res) => {
@@ -236,22 +213,41 @@ export const getSolicitudUsoById = async (req, res) => {
 };
 
 export const updateEstadoSolicitud = async (req, res) => {
-    const transaction = new sql.Transaction();
-    try {
-        const { id } = req.params;
-        const { estado } = req.body;
-        const pool = await getConnection();
+    const pool = await getConnection();
+    const transaction = new sql.Transaction(pool);
+    let transactionStarted = false;
 
-        if (!estado) {
-            return res.status(400).json({ message: "Estado es requerido" });
+    try {
+        // Validación del ID
+        const { id } = req.params;
+        if (isNaN(id) || !Number.isInteger(Number(id))) {
+            return res.status(400).json({
+                message: "ID inválido",
+                details: "El parámetro ID debe ser un número entero"
+            });
+        }
+        const solicitudId = parseInt(id, 10);
+
+        // Validación del estado
+        const { estado } = req.body;
+        const estadosPermitidos = ['Pendiente', 'Aprobada', 'Rechazada', 'Completada'];
+        if (!estado || !estadosPermitidos.includes(estado)) {
+            return res.status(400).json({
+                message: "Estado inválido",
+                details: `Estados permitidos: ${estadosPermitidos.join(', ')}`
+            });
         }
 
-        await transaction.begin(pool);
+        // Configurar transacción
+        transaction.isolationLevel = sql.ISOLATION_LEVEL.READ_COMMITTED;
+        await transaction.begin();
+        transactionStarted = true;
 
+        // Verificar existencia de la solicitud
         const solicitud = await new sql.Request(transaction)
-            .input('id', sql.Int, id)
+            .input('id', sql.Int, solicitudId)
             .query(`
-                SELECT estado, id_solicitud 
+                SELECT estado 
                 FROM SolicitudesUso 
                 WHERE id_solicitud = @id
             `);
@@ -261,9 +257,10 @@ export const updateEstadoSolicitud = async (req, res) => {
             return res.status(404).json({ message: "Solicitud no encontrada" });
         }
 
+        // Lógica de aprobación
         if (estado === 'Aprobada') {
             const detalles = await new sql.Request(transaction)
-                .input('id', sql.Int, id)
+                .input('id', sql.Int, solicitudId)
                 .query(`
                     SELECT d.id_insumo, d.cantidad_total, i.stock_actual
                     FROM DetalleSolicitudUso d
@@ -271,11 +268,12 @@ export const updateEstadoSolicitud = async (req, res) => {
                     WHERE d.id_solicitud = @id
                 `);
 
+            // Validar stock
             for (const detalle of detalles.recordset) {
                 if (detalle.stock_actual < detalle.cantidad_total) {
                     await transaction.rollback();
                     return res.status(400).json({
-                        message: `Stock insuficiente para ${detalle.id_insumo}`,
+                        message: `Stock insuficiente para insumo ${detalle.id_insumo}`,
                         id_insumo: detalle.id_insumo,
                         stock_disponible: detalle.stock_actual,
                         requerido: detalle.cantidad_total
@@ -296,7 +294,7 @@ export const updateEstadoSolicitud = async (req, res) => {
                 await new sql.Request(transaction)
                     .input('id_insumo', sql.Int, detalle.id_insumo)
                     .input('cantidad', sql.Int, detalle.cantidad_total)
-                    .input('id_solicitud', sql.Int, id)
+                    .input('id_solicitud', sql.Int, solicitudId)
                     .input('responsable', sql.VarChar(100), 'Sistema')
                     .query(`
                         INSERT INTO MovimientosInventario 
@@ -307,21 +305,31 @@ export const updateEstadoSolicitud = async (req, res) => {
         }
 
         await new sql.Request(transaction)
-            .input('id', sql.Int, id)
+            .input('id', sql.Int, solicitudId)
             .input('estado', sql.VarChar(20), estado)
             .query(`
-                UPDATE SolicitudesUso 
-                SET estado = @estado 
+                UPDATE SolicitudesUso
+                SET estado = @estado
                 WHERE id_solicitud = @id
             `);
 
         await transaction.commit();
-        res.json({ message: "Estado actualizado exitosamente" });
+        res.json({
+            message: "Estado actualizado exitosamente",
+            nuevoEstado: estado
+        });
 
     } catch (error) {
-        await transaction.rollback();
+        if (transactionStarted) await transaction.rollback();
         console.error('Error al actualizar estado:', error);
-        res.status(500).json({ message: "Error al actualizar estado" });
+
+        const errorDetails = {
+            message: "Error interno al procesar la solicitud",
+            code: error.code || 'DESCONOCIDO',
+            details: error.originalError?.message || error.message
+        };
+
+        res.status(500).json(errorDetails);
     }
 };
 
