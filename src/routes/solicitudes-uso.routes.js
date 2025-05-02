@@ -4,8 +4,10 @@ import {
     getSolicitudesUso,
     getSolicitudUsoById,
     updateEstadoSolicitud,
-    devolverSolicitud
+    devolverSolicitud,
+    getInsumosPorSolicitud,
 } from '../controllers/solicitudes-uso.controller.js';
+
 
 const router = Router();
 
@@ -18,5 +20,6 @@ router.get('/solicitudes-uso/:id', getSolicitudUsoById);
 router.put('/solicitudes-uso/:id/estado', updateEstadoSolicitud);
 
 router.post('/solicitudes-uso/:id/devolver', devolverSolicitud);
+router.get('/solicitudes-uso/:id/insumos', getInsumosPorSolicitud);
 
 export default router;

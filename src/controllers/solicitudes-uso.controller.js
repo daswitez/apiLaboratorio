@@ -218,7 +218,6 @@ export const updateEstadoSolicitud = async (req, res) => {
     let transactionStarted = false;
 
     try {
-        // Validación del ID
         const { id } = req.params;
         if (isNaN(id) || !Number.isInteger(Number(id))) {
             return res.status(400).json({
@@ -228,7 +227,6 @@ export const updateEstadoSolicitud = async (req, res) => {
         }
         const solicitudId = parseInt(id, 10);
 
-        // Validación del estado
         const { estado } = req.body;
         const estadosPermitidos = ['Pendiente', 'Aprobada', 'Rechazada', 'Completada'];
         if (!estado || !estadosPermitidos.includes(estado)) {
@@ -238,17 +236,15 @@ export const updateEstadoSolicitud = async (req, res) => {
             });
         }
 
-        // Configurar transacción
         transaction.isolationLevel = sql.ISOLATION_LEVEL.READ_COMMITTED;
         await transaction.begin();
         transactionStarted = true;
 
-        // Verificar existencia de la solicitud
         const solicitud = await new sql.Request(transaction)
             .input('id', sql.Int, solicitudId)
             .query(`
-                SELECT estado 
-                FROM SolicitudesUso 
+                SELECT estado
+                FROM SolicitudesUso
                 WHERE id_solicitud = @id
             `);
 
@@ -257,7 +253,16 @@ export const updateEstadoSolicitud = async (req, res) => {
             return res.status(404).json({ message: "Solicitud no encontrada" });
         }
 
-        // Lógica de aprobación
+        const estadoActual = solicitud.recordset[0].estado;
+
+        if (estado === 'Completada' && estadoActual !== 'Aprobada') {
+            await transaction.rollback();
+            return res.status(400).json({
+                message: "Solicitud no puede completarse",
+                details: "La solicitud debe estar en estado 'Aprobada'"
+            });
+        }
+
         if (estado === 'Aprobada') {
             const detalles = await new sql.Request(transaction)
                 .input('id', sql.Int, solicitudId)
@@ -268,7 +273,6 @@ export const updateEstadoSolicitud = async (req, res) => {
                     WHERE d.id_solicitud = @id
                 `);
 
-            // Validar stock
             for (const detalle of detalles.recordset) {
                 if (detalle.stock_actual < detalle.cantidad_total) {
                     await transaction.rollback();
@@ -279,9 +283,7 @@ export const updateEstadoSolicitud = async (req, res) => {
                         requerido: detalle.cantidad_total
                     });
                 }
-            }
 
-            for (const detalle of detalles.recordset) {
                 await new sql.Request(transaction)
                     .input('id_insumo', sql.Int, detalle.id_insumo)
                     .input('cantidad', sql.Int, detalle.cantidad_total)
@@ -304,6 +306,38 @@ export const updateEstadoSolicitud = async (req, res) => {
             }
         }
 
+        if (estado === 'Completada') {
+            const detalles = await new sql.Request(transaction)
+                .input('id', sql.Int, solicitudId)
+                .query(`
+                    SELECT id_insumo, cantidad_total 
+                    FROM DetalleSolicitudUso 
+                    WHERE id_solicitud = @id
+                `);
+
+            for (const detalle of detalles.recordset) {
+                await new sql.Request(transaction)
+                    .input('id_insumo', sql.Int, detalle.id_insumo)
+                    .input('cantidad', sql.Int, detalle.cantidad_total)
+                    .query(`
+                        UPDATE Insumos 
+                        SET stock_actual = stock_actual + @cantidad 
+                        WHERE id_insumo = @id_insumo
+                    `);
+
+                await new sql.Request(transaction)
+                    .input('id_insumo', sql.Int, detalle.id_insumo)
+                    .input('cantidad', sql.Int, detalle.cantidad_total)
+                    .input('id_solicitud', sql.Int, solicitudId)
+                    .input('responsable', sql.VarChar(100), 'Sistema')
+                    .query(`
+                        INSERT INTO MovimientosInventario 
+                        (id_insumo, tipo_movimiento, cantidad, responsable, id_solicitud)
+                        VALUES (@id_insumo, 'DEVOLUCION', @cantidad, @responsable, @id_solicitud)
+                    `);
+            }
+        }
+
         await new sql.Request(transaction)
             .input('id', sql.Int, solicitudId)
             .input('estado', sql.VarChar(20), estado)
@@ -322,40 +356,54 @@ export const updateEstadoSolicitud = async (req, res) => {
     } catch (error) {
         if (transactionStarted) await transaction.rollback();
         console.error('Error al actualizar estado:', error);
-
-        const errorDetails = {
+        res.status(500).json({
             message: "Error interno al procesar la solicitud",
-            code: error.code || 'DESCONOCIDO',
-            details: error.originalError?.message || error.message
-        };
-
-        res.status(500).json(errorDetails);
+            details: error.message
+        });
     }
 };
 
 export const devolverSolicitud = async (req, res) => {
-    const transaction = new sql.Transaction();
+    const pool = await getConnection();
+    const transaction = new sql.Transaction(pool);
+    let transactionStarted = false;
+
     try {
         const { id } = req.params;
-        const pool = await getConnection();
 
-        await transaction.begin(pool);
+        if (isNaN(id) || !Number.isInteger(Number(id))) {
+            return res.status(400).json({
+                message: "ID inválido",
+                details: "El ID debe ser un número entero"
+            });
+        }
+        const solicitudId = parseInt(id, 10);
+
+        await transaction.begin();
+        transactionStarted = true;
 
         const solicitud = await new sql.Request(transaction)
-            .input('id', sql.Int, id)
+            .input('id', sql.Int, solicitudId)
             .query(`
-                SELECT estado 
-                FROM SolicitudesUso 
+                SELECT estado
+                FROM SolicitudesUso
                 WHERE id_solicitud = @id
             `);
 
+        if (solicitud.recordset.length === 0) {
+            await transaction.rollback();
+            return res.status(404).json({ message: "Solicitud no encontrada" });
+        }
+
         if (solicitud.recordset[0].estado !== 'Aprobada') {
             await transaction.rollback();
-            return res.status(400).json({ message: "La solicitud debe estar en estado Aprobada" });
+            return res.status(400).json({
+                message: "Solo se pueden devolver solicitudes aprobadas"
+            });
         }
 
         const detalles = await new sql.Request(transaction)
-            .input('id', sql.Int, id)
+            .input('id', sql.Int, solicitudId)
             .query(`
                 SELECT id_insumo, cantidad_total 
                 FROM DetalleSolicitudUso 
@@ -363,7 +411,7 @@ export const devolverSolicitud = async (req, res) => {
             `);
 
         for (const detalle of detalles.recordset) {
-            await new sql.Request(transaction)
+            const updateResult = await new sql.Request(transaction)
                 .input('id_insumo', sql.Int, detalle.id_insumo)
                 .input('cantidad', sql.Int, detalle.cantidad_total)
                 .query(`
@@ -372,32 +420,78 @@ export const devolverSolicitud = async (req, res) => {
                     WHERE id_insumo = @id_insumo
                 `);
 
+            if (updateResult.rowsAffected[0] === 0) {
+                await transaction.rollback();
+                return res.status(404).json({
+                    message: `Insumo ${detalle.id_insumo} no encontrado`
+                });
+            }
+
             await new sql.Request(transaction)
-                .input('id_solicitud', sql.Int, id)
                 .input('id_insumo', sql.Int, detalle.id_insumo)
+                .input('cantidad', sql.Int, detalle.cantidad_total)
+                .input('id_solicitud', sql.Int, solicitudId)
+                .input('responsable', sql.VarChar(100), 'Sistema')
                 .query(`
-                    UPDATE MovimientosInventario 
-                    SET fecha_devuelto = GETDATE()
-                    WHERE id_solicitud = @id_solicitud 
-                    AND id_insumo = @id_insumo 
-                    AND fecha_devuelto IS NULL
+                    INSERT INTO MovimientosInventario 
+                    (id_insumo, tipo_movimiento, cantidad, responsable, id_solicitud)
+                    VALUES (@id_insumo, 'DEVOLUCION', @cantidad, @responsable, @id_solicitud)
                 `);
         }
 
         await new sql.Request(transaction)
-            .input('id', sql.Int, id)
+            .input('id', sql.Int, solicitudId)
             .query(`
-                UPDATE SolicitudesUso 
-                SET estado = 'Completada' 
+                UPDATE SolicitudesUso
+                SET estado = 'Completada'
                 WHERE id_solicitud = @id
             `);
 
         await transaction.commit();
-        res.json({ message: "Devolución registrada exitosamente" });
+        res.json({
+            message: "Devolución completada exitosamente",
+            insumosRestaurados: detalles.recordset
+        });
 
     } catch (error) {
-        await transaction.rollback();
+        if (transactionStarted) await transaction.rollback();
         console.error('Error al registrar devolución:', error);
-        res.status(500).json({ message: "Error al registrar devolución" });
+        res.status(500).json({
+            message: "Error al registrar devolución",
+            details: error.message
+        });
     }
 };
+
+export const getInsumosPorSolicitud = async (req, res) => {
+    const { id } = req.params;
+    try {
+        const pool = await getConnection();
+        const result = await pool.request()
+            .input('id_solicitud', sql.Int, id)
+            .query(`
+                SELECT
+                    i.id_insumo,
+                    i.nombre,
+                    i.descripcion,
+                    i.ubicacion,
+                    i.tipo,
+                    i.unidad_medida,
+                    dsu.cantidad_por_grupo,
+                    dsu.cantidad_total
+                FROM DetalleSolicitudUso dsu
+                         JOIN Insumos i ON dsu.id_insumo = i.id_insumo
+                WHERE dsu.id_solicitud = @id_solicitud
+            `);
+
+        if (result.recordset.length === 0) {
+            return res.status(404).json({ message: "No se encontraron insumos para esta solicitud" });
+        }
+
+        res.json(result.recordset);
+    } catch (error) {
+        console.error("Error al obtener insumos por solicitud:", error);
+        res.status(500).json({ message: "Error al obtener insumos por solicitud" });
+    }
+};
+
