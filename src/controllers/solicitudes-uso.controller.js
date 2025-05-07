@@ -15,7 +15,7 @@ export const createSolicitudUso = async (req, res) => {
             numero_estudiantes,
             tamano_grupo = 3,
             observaciones,
-            insumos
+            insumos: insumosManuales
         } = req.body;
 
         const requiredFields = [
@@ -39,7 +39,6 @@ export const createSolicitudUso = async (req, res) => {
 
         const pool = await getConnection();
         transaction = new sql.Transaction(pool);
-
         await transaction.begin();
         transactionStarted = true;
 
@@ -84,12 +83,41 @@ export const createSolicitudUso = async (req, res) => {
 
         const id_solicitud = solicitudResult.recordset[0].id_solicitud;
 
-        if (!Array.isArray(insumos) || insumos.length === 0) {
-            await transaction.rollback();
-            return res.status(400).json({ message: "Debe especificar al menos un insumo" });
+        let insumosAFacturar = [];
+
+        if (id_practica) {
+            const practicaInsumos = await new sql.Request(transaction)
+                .input('id_practica', sql.Int, id_practica)
+                .query(`
+                    SELECT id_insumo, cantidad_requerida 
+                    FROM InsumosPorPractica 
+                    WHERE id_practica = @id_practica
+                `);
+
+            if (practicaInsumos.recordset.length === 0) {
+                await transaction.rollback();
+                return res.status(400).json({
+                    message: "La práctica no tiene insumos configurados"
+                });
+            }
+
+            insumosAFacturar = practicaInsumos.recordset.map(pi => ({
+                id_insumo: pi.id_insumo,
+                cantidad_por_grupo: pi.cantidad_requerida
+            }));
+
+            if (insumosManuales?.length > 0) {
+                console.warn('Advertencia: Insumos manuales ignorados por existencia de práctica');
+            }
+        } else {
+            if (!Array.isArray(insumosManuales) || insumosManuales.length === 0) {
+                await transaction.rollback();
+                return res.status(400).json({ message: "Debe especificar insumos o seleccionar práctica" });
+            }
+            insumosAFacturar = insumosManuales;
         }
 
-        for (const insumo of insumos) {
+        for (const insumo of insumosAFacturar) {
             if (!insumo.id_insumo || !insumo.cantidad_por_grupo) {
                 await transaction.rollback();
                 return res.status(400).json({ message: "Formato de insumo inválido" });
@@ -122,7 +150,8 @@ export const createSolicitudUso = async (req, res) => {
 
         res.status(201).json({
             id_solicitud,
-            message: "Solicitud creada exitosamente"
+            message: "Solicitud creada exitosamente",
+            detalle: `${insumosAFacturar.length} insumos registrados`
         });
 
     } catch (error) {
@@ -131,16 +160,16 @@ export const createSolicitudUso = async (req, res) => {
         console.error('Error al crear solicitud:', error);
 
         const errorMessage = error.number === 2627
-            ? "El nombre de la solicitud ya existe"
-            : "Error al crear solicitud";
+            ? "Conflicto de datos: Posible duplicidad"
+            : "Error interno al crear solicitud";
 
         res.status(500).json({
             message: errorMessage,
-            details: error.message
+            details: error.message,
+            operation: "CREATE_SOLICITUD_USO"
         });
     }
 };
-
 
 export const getSolicitudesUso = async (req, res) => {
     try {
@@ -255,11 +284,19 @@ export const updateEstadoSolicitud = async (req, res) => {
 
         const estadoActual = solicitud.recordset[0].estado;
 
-        if (estado === 'Completada' && estadoActual !== 'Aprobada') {
+        const estadosValidos = {
+            Pendiente: ['Aprobada', 'Rechazada'],
+            Aprobada: ['Completada', 'Rechazada'],
+            Completada: [],
+            Rechazada: []
+        };
+
+        if (!estadosValidos[estadoActual].includes(estado)) {
             await transaction.rollback();
             return res.status(400).json({
-                message: "Solicitud no puede completarse",
-                details: "La solicitud debe estar en estado 'Aprobada'"
+                message: "Transición de estado inválida",
+                details: `De ${estadoActual} a ${estado} no permitido`,
+                transiciones_validas: estadosValidos[estadoActual]
             });
         }
 
@@ -269,7 +306,7 @@ export const updateEstadoSolicitud = async (req, res) => {
                 .query(`
                     SELECT d.id_insumo, d.cantidad_total, i.stock_actual
                     FROM DetalleSolicitudUso d
-                    JOIN Insumos i ON d.id_insumo = i.id_insumo
+                             JOIN Insumos i ON d.id_insumo = i.id_insumo
                     WHERE d.id_solicitud = @id
                 `);
 
@@ -288,8 +325,8 @@ export const updateEstadoSolicitud = async (req, res) => {
                     .input('id_insumo', sql.Int, detalle.id_insumo)
                     .input('cantidad', sql.Int, detalle.cantidad_total)
                     .query(`
-                        UPDATE Insumos 
-                        SET stock_actual = stock_actual - @cantidad 
+                        UPDATE Insumos
+                        SET stock_actual = stock_actual - @cantidad
                         WHERE id_insumo = @id_insumo
                     `);
 
@@ -299,8 +336,8 @@ export const updateEstadoSolicitud = async (req, res) => {
                     .input('id_solicitud', sql.Int, solicitudId)
                     .input('responsable', sql.VarChar(100), 'Sistema')
                     .query(`
-                        INSERT INTO MovimientosInventario 
-                        (id_insumo, tipo_movimiento, cantidad, responsable, id_solicitud)
+                        INSERT INTO MovimientosInventario
+                            (id_insumo, tipo_movimiento, cantidad, responsable, id_solicitud)
                         VALUES (@id_insumo, 'PRESTAMO', @cantidad, @responsable, @id_solicitud)
                     `);
             }
@@ -348,9 +385,11 @@ export const updateEstadoSolicitud = async (req, res) => {
             `);
 
         await transaction.commit();
+
         res.json({
             message: "Estado actualizado exitosamente",
-            nuevoEstado: estado
+            nuevoEstado: estado,
+            estadoAnterior: estadoActual
         });
 
     } catch (error) {
@@ -358,7 +397,8 @@ export const updateEstadoSolicitud = async (req, res) => {
         console.error('Error al actualizar estado:', error);
         res.status(500).json({
             message: "Error interno al procesar la solicitud",
-            details: error.message
+            details: error.message,
+            operation: "UPDATE_ESTADO_SOLICITUD"
         });
     }
 };
@@ -492,6 +532,29 @@ export const getInsumosPorSolicitud = async (req, res) => {
     } catch (error) {
         console.error("Error al obtener insumos por solicitud:", error);
         res.status(500).json({ message: "Error al obtener insumos por solicitud" });
+    }
+};
+
+export const getPracticasConInsumos = async (req, res) => {
+    try {
+        const pool = await getConnection();
+        const result = await pool.request()
+            .query(`
+                SELECT 
+                    p.id_practica,
+                    p.titulo,
+                    i.nombre as insumo,
+                    ip.cantidad_requerida,
+                    i.unidad_medida
+                FROM Practicas p
+                JOIN InsumosPorPractica ip ON p.id_practica = ip.id_practica
+                JOIN Insumos i ON ip.id_insumo = i.id_insumo
+            `);
+
+        res.json(result.recordset);
+    } catch (error) {
+        console.error('Error al obtener prácticas:', error);
+        res.status(500).json({ message: "Error al obtener prácticas" });
     }
 };
 
